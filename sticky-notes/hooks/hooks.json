@@ -1,0 +1,4 @@
+{
+  "description": "The sticky-notes hooks module",
+  "modules": ["./register.js"]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "sticky-notes",
+  "version": "0.2.0",
+  "description": "A sticky-note sidebar: pin Claude's checklists and messages so they stay in view while you keep chatting",
+  "author": { "name": "Leander Lorenz Lubguban" },
+  "license": "MIT",
+  "keywords": ["mod", "sidebar", "notes", "checklist", "pin"]
+}
