@@ -16,6 +16,16 @@ export function stripInline(text) {
     .trim()
 }
 
+// The `inline code` spans of a line: what's worth a copy button
+export function inlineCodes(text) {
+  const codes = []
+  for (const m of String(text).matchAll(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g)) {
+    const code = m[2].trim()
+    if (code) codes.push(code)
+  }
+  return codes
+}
+
 function shorten(text) {
   return text.length > TITLE_MAX ? text.slice(0, TITLE_MAX - 1).trimEnd() + '…' : text
 }
@@ -25,14 +35,20 @@ function shorten(text) {
 function parseItems(text) {
   const items = []
   let inFence = false
+  let fenceLines = []
   let lead = null
   for (const line of text.split('\n')) {
     if (FENCE.test(line)) {
+      const closing = inFence
       inFence = !inFence
+      const owner = items[items.length - 1]
+      if (closing && owner && fenceLines.length) owner.codes.push(fenceLines.join('\n'))
+      fenceLines = []
       continue
     }
     const last = items[items.length - 1]
     if (inFence) {
+      fenceLines.push(line)
       if (last) last.detailLines.push(line)
       continue
     }
@@ -45,16 +61,21 @@ function parseItems(text) {
         done: m[2] === 'x' || m[2] === 'X',
         depth: indent > lead ? 1 : 0,
         detailLines: [],
+        codes: inlineCodes(m[3]),
       })
       continue
     }
     // An indented line under an item explains that item
-    if (last && /^\s+\S/.test(line)) last.detailLines.push(line.trim())
+    if (last && /^\s+\S/.test(line)) {
+      last.detailLines.push(line.trim())
+      last.codes.push(...inlineCodes(line))
+    }
   }
   if (items.filter((i) => i.depth === 0).length < 2) return null
-  return items.map(({ detailLines, ...item }) => {
+  return items.map(({ detailLines, codes, ...item }) => {
     const detail = detailLines.join('\n').trim()
-    return detail ? { ...item, detail } : item
+    const withCodes = codes.length ? { ...item, codes: [...new Set(codes)] } : item
+    return detail ? { ...withCodes, detail } : withCodes
   })
 }
 
@@ -83,6 +104,8 @@ export function makePin({ id, source, text, title, createdAt = 0 }) {
     items,
     // A one-line text is already its title, so don't draw it twice
     body: body && stripInline(body) !== pinTitle ? body : null,
+    // The markdown as it was pinned, so a note can be copied back out whole
+    raw: text.trim(),
     collapsed: false,
     createdAt,
   }
@@ -136,4 +159,81 @@ export function parseUnpinArgs(args) {
   if (text === 'all') return { all: true }
   if (/^\d+$/.test(text) && Number(text) > 0) return { n: Number(text) }
   return { error: 'Use /unpin, /unpin <number>, or /unpin all' }
+}
+
+// What "copy this note" puts on the clipboard: the markdown as pinned, or for
+// notes saved before `raw` existed, the checklist rebuilt from its items.
+export function pinMarkdown(pin) {
+  if (pin.raw) return pin.raw
+  if (pin.items) {
+    const lines = pin.items.map((i) => '  '.repeat(i.depth) + '- [' + (i.done ? 'x' : ' ') + '] ' + i.text)
+    return lines.join('\n')
+  }
+  return pin.body || pin.title
+}
+
+// The checklist as markdown with the current ticks
+export function checklistMarkdown(pin) {
+  if (!pin.items) return pinMarkdown(pin)
+  return pin.items.map((i) => '  '.repeat(i.depth) + '- [' + (i.done ? 'x' : ' ') + '] ' + i.text).join('\n')
+}
+
+// Every code snippet in a pin, in reading order, for "copy all commands"
+export function pinCodes(pin) {
+  if (pin.items) return [...new Set(pin.items.flatMap((i) => i.codes || []))]
+  const codes = []
+  for (const seg of splitBlocks(pin.body || '')) {
+    if (seg.kind === 'code') codes.push(seg.source)
+    else if (seg.kind === 'text') codes.push(...inlineCodes(seg.text))
+  }
+  return [...new Set(codes)]
+}
+
+const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/
+
+function splitRow(line) {
+  let t = line.trim()
+  if (t.startsWith('|')) t = t.slice(1)
+  if (t.endsWith('|') && !t.endsWith('\\|')) t = t.slice(0, -1)
+  return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'))
+}
+
+// Cuts a markdown body into prose, fenced code and tables, so each can be
+// drawn (and copied) in the way that suits it.
+export function splitBlocks(text) {
+  const lines = String(text).split('\n')
+  const out = []
+  let prose = []
+  const flush = () => {
+    const t = prose.join('\n').trim()
+    if (t) out.push({ kind: 'text', text: t })
+    prose = []
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const fence = FENCE.exec(lines[i])
+    if (fence) {
+      flush()
+      const lang = lines[i].replace(/^\s*(```|~~~)\s*/, '').trim()
+      const src = []
+      i++
+      while (i < lines.length && !lines[i].trim().startsWith(fence[1])) src.push(lines[i++])
+      out.push({ kind: 'code', lang, source: src.join('\n') })
+      continue
+    }
+    if (lines[i].includes('|') && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1]) && lines[i + 1].includes('-')) {
+      flush()
+      const start = i
+      const header = splitRow(lines[i])
+      const aligns = splitRow(lines[i + 1]).map((c) => (c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : 'left'))
+      i += 2
+      const rows = []
+      while (i < lines.length && lines[i].trim() && lines[i].includes('|')) rows.push(splitRow(lines[i++]))
+      i--
+      out.push({ kind: 'table', header, aligns, rows, source: lines.slice(start, i + 1).join('\n') })
+      continue
+    }
+    prose.push(lines[i])
+  }
+  flush()
+  return out
 }

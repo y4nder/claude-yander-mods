@@ -43,6 +43,13 @@ prompt, and **Ctrl+X ←/→** resizes it.
 - **Checklists**: a pinned message with two or more list items becomes tickable
   items. Code blocks and indented lines under an item show as its detail and hide
   once the item is ticked.
+- **Copy**: every note has a `⧉` to copy it as markdown. `` `Commands` `` and
+  fenced code blocks get their own copy button; past three on one note they fold
+  into a single "copy all" button. A table cell holding only a `` `code` `` span
+  copies on click, and `⧉ copy table` copies the table as markdown. Notes pinned
+  before 0.3 keep working but have no per-command buttons until pinned again.
+- **Wrapping**: long items and titles wrap inside the pane instead of being cut.
+- **Tables**: drawn as a grid with a bold header and wrapping cells.
 - **Claude pins for you**: Claude gets a `pin` tool and is told to use it for
   step-by-step instructions you'll work through. Those notes show a ✦.
 - **Marker**: a message you pinned with `/pin` shows `📌 pinned to sticky notes`
@@ -54,5 +61,6 @@ prompt, and **Ctrl+X ←/→** resizes it.
 
 ```bash
 node --test tests/pins.node-test.js
+claude plugin test .
 claude plugin validate .
 ```

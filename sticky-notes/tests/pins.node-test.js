@@ -2,7 +2,7 @@
 // Run with: node --test sticky-notes/tests/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { makePin, toggleItem, progress, hashText, stripInline, parsePinArgs, parseUnpinArgs } from '../hooks/pins.js'
+import { makePin, toggleItem, progress, hashText, stripInline, parsePinArgs, parseUnpinArgs, inlineCodes, splitBlocks, pinCodes, pinMarkdown } from '../hooks/pins.js'
 
 test('a numbered list becomes a checklist titled by its heading', () => {
   const pin = makePin({
@@ -116,4 +116,31 @@ test('parseUnpinArgs refuses anything that is not a positive index or all', () =
   assert.deepEqual(parseUnpinArgs('3'), { n: 3 })
   assert.deepEqual(parseUnpinArgs('all'), { all: true })
   for (const bad of ['al', 'foo', '0', '-2', '2x']) assert.ok(parseUnpinArgs(bad).error, bad)
+})
+
+test('inline code and fenced blocks on an item become copyable codes', () => {
+  const pin = makePin({
+    id: 'a',
+    source: 'message',
+    text: '1. Run `npm install` then `npm test`\n   ```bash\n   git push\n   git status\n   ```\n2. Done',
+  })
+  assert.deepEqual(pin.items[0].codes, ['npm install', 'npm test', '   git push\n   git status'])
+  assert.equal(pin.items[1].codes, undefined)
+  assert.deepEqual(inlineCodes('a `x` b ``y`z`` c'), ['x', 'y`z'])
+  assert.equal(pinCodes(pin).length, 3)
+})
+
+test('a pin keeps its markdown so it can be copied back out', () => {
+  assert.equal(makePin({ id: 'a', source: 'note', text: '  hello\nworld ' }).raw, 'hello\nworld')
+  assert.equal(pinMarkdown({ items: [{ text: 'a', done: true, depth: 0 }, { text: 'b', done: false, depth: 1 }] }), '- [x] a\n  - [ ] b')
+})
+
+test('splitBlocks separates prose, code and tables', () => {
+  const blocks = splitBlocks('Intro\n\n| Name | Qty |\n| :-- | --: |\n| a \\| b | 2 |\n\n```sh\nls -la\n```\nAfter')
+  assert.deepEqual(blocks.map((b) => b.kind), ['text', 'table', 'code', 'text'])
+  assert.deepEqual(blocks[1].header, ['Name', 'Qty'])
+  assert.deepEqual(blocks[1].aligns, ['left', 'right'])
+  assert.deepEqual(blocks[1].rows, [['a | b', '2']])
+  assert.equal(blocks[2].source, 'ls -la')
+  assert.equal(blocks[2].lang, 'sh')
 })
