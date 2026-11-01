@@ -6,6 +6,8 @@ Claude Code mods by Leander Lorenz Lubguban.
 | :- | :- |
 | [sticky-notes](./sticky-notes) | A sticky-note sidebar for pinning Claude's checklists and messages |
 
+![sticky-notes in the terminal UI](sticky-notes/docs/tui.webp)
+
 ## Install
 
 ```bash

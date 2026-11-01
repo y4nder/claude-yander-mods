@@ -5,6 +5,10 @@ checklists and messages so they stay in view while you keep asking questions.
 
 Requires Claude Code v2.1.287 or later. Tested on v2.1.312.
 
+![Sticky notes in the Claude desktop app](docs/desktop.webp)
+
+![Sticky notes in the terminal UI](docs/tui.webp)
+
 ## Install
 
 ```bash
@@ -22,7 +26,8 @@ where that session can draw it.
 | Session | Sidebar |
 | :- | :- |
 | Terminal | Yes |
-| Desktop or web, Remote Control or a remote environment | No. Pins still save. |
+| Desktop app | Yes, as a "Sticky notes" pane |
+| Web, Remote Control or a remote environment | No. Pins still save. |
 
 The sidebar docks on the right in a wide fullscreen terminal (`/tui fullscreen`),
 and sits above the prompt in a narrow one.
