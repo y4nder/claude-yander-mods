@@ -113,6 +113,21 @@ export function makePin({ id, source, text, title, createdAt = 0 }) {
   return pin
 }
 
+// Claude re-pinning a note under the same title updates that note instead of
+// stacking a copy: it keeps its id, place and view state, and an item stays
+// ticked if the user ticked it by hand (matched by its text).
+export function upsertClaudePin(pins, fresh) {
+  const key = (t) => String(t || '').trim().toLowerCase()
+  const at = pins.findIndex((p) => p.source === 'claude' && key(p.title) === key(fresh.title))
+  if (at === -1) return { pins: [fresh, ...pins], replaced: false }
+  const old = pins[at]
+  const doneBefore = new Set((old.items || []).filter((i) => i.done).map((i) => i.text))
+  const items = fresh.items && fresh.items.map((i) => (doneBefore.has(i.text) ? { ...i, done: true } : i))
+  const next = { ...fresh, items, id: old.id, collapsed: old.collapsed, createdAt: old.createdAt }
+  if (old.hideDone !== undefined) next.hideDone = old.hideDone
+  return { pins: pins.map((p, i) => (i === at ? next : p)), replaced: true }
+}
+
 export function toggleItem(pins, pinId, index) {
   return pins.map((p) =>
     p.id !== pinId || !p.items ? p : withItems(p, p.items.map((it, i) => (i === index ? { ...it, done: !it.done } : it))),

@@ -180,3 +180,27 @@ test('unticking the last done item resets the fold, so a later tick stays visibl
   assert.equal(out.hideDone, false)
   assert.equal(toggleItem([{ ...pin }], 'a', 1)[0].hideDone, true)
 })
+
+test('re-pinning a Claude note with the same title replaces it in place, keeping hand ticks', async () => {
+  const { upsertClaudePin } = await import('../hooks/pins.js')
+  const other = makePin({ id: 'o', source: 'note', text: 'Buy milk' })
+  const old = { ...makePin({ id: 'c', source: 'claude', title: 'Call prep', text: '- a\n- b\n- c', createdAt: 1 }), collapsed: true }
+  const ticked = toggleItem([old], 'c', 1)[0] // the user ticked "b" by hand
+  const fresh = makePin({ id: 'new', source: 'claude', title: 'call prep', text: '- [x] a\n- b\n- c\n- d', createdAt: 2 })
+  const { pins, replaced } = upsertClaudePin([other, ticked], fresh)
+  assert.equal(replaced, true)
+  assert.equal(pins.length, 2)
+  assert.equal(pins[1].id, 'c') // same note, same place
+  assert.equal(pins[1].collapsed, true)
+  assert.deepEqual(pins[1].items.map((i) => [i.text, i.done]), [['a', true], ['b', true], ['c', false], ['d', false]])
+  assert.equal(pins[1].raw, '- [x] a\n- b\n- c\n- d')
+})
+
+test('a Claude pin with a new title, or a matching title on a user note, is added on top', async () => {
+  const { upsertClaudePin } = await import('../hooks/pins.js')
+  const mine = makePin({ id: 'm', source: 'note', text: 'Call prep' })
+  const fresh = makePin({ id: 'new', source: 'claude', title: 'Call prep', text: '- a\n- b' })
+  const { pins, replaced } = upsertClaudePin([mine], fresh)
+  assert.equal(replaced, false)
+  assert.deepEqual(pins.map((p) => p.id), ['new', 'm'])
+})

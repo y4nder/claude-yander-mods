@@ -1,5 +1,5 @@
 // sticky-notes: a sidebar of pinned messages, checklists and notes, kept per project.
-import { makePin, toggleItem, toggleCollapsed, toggleHideDone, removePin, pinMeta, hashText, parsePinArgs, parseUnpinArgs, splitBlocks, pinMarkdown, checklistMarkdown, pinCodes, stripInline } from './pins.js'
+import { makePin, toggleItem, toggleCollapsed, toggleHideDone, removePin, pinMeta, hashText, parsePinArgs, parseUnpinArgs, splitBlocks, pinMarkdown, checklistMarkdown, pinCodes, stripInline, upsertClaudePin } from './pins.js'
 
 const PANE = 'sticky'
 
@@ -43,6 +43,22 @@ async function addPin($, fields, withFocus) {
   return pin
 }
 
+// Claude's pin: replaces Claude's earlier note of the same title, else adds one
+async function upsertPin($, fields) {
+  const fresh = makePin({ ...fields, id: newId(), createdAt: await $.clock.now() })
+  let pin = fresh
+  let replaced = false
+  await mutate($, (list) => {
+    const out = upsertClaudePin(list, fresh)
+    replaced = out.replaced
+    pin = out.pins.find((p) => p.title === fresh.title && p.source === 'claude') || fresh
+    return out.pins
+  })
+  const placed = await openPane($, false)
+  if (!placed?.isPlaced) $.ui.toast('📌 ' + (replaced ? 'Updated' : 'Pinned') + ' "' + pin.title + '" · run /sticky to see it')
+  return { pin, replaced }
+}
+
 // The nth most recent message from Claude that has text, counting from 1
 async function recentClaudeText($, n) {
   const messages = await $.session.messages()
@@ -77,7 +93,9 @@ export function register(on) {
         "Pin text to the user's sticky-note sidebar so it stays visible while the conversation scrolls on. " +
         'Use it when you give the user step-by-step instructions, a checklist, or a plan they will work through ' +
         'while asking follow-up questions. Markdown lists become tickable checklist items. ' +
-        "Don't pin short answers or things the user won't need to refer back to.",
+        "Don't pin short answers or things the user won't need to refer back to. " +
+        'To update a note you pinned (tick an item, change a line), pin it again with the same title: ' +
+        'it replaces that note in place and keeps what the user ticked, instead of adding a copy.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -158,9 +176,10 @@ export function register(on) {
   on('tool.call', { tool: 'mcp__sticky-notes__pin' }, async ($, e) => {
     const text = String(e.text || '').trim()
     if (!text) return { result: 'Nothing pinned: text was empty.' }
-    const pin = await addPin($, { source: 'claude', text, title: e.title }, false)
+    const { pin, replaced } = await upsertPin($, { source: 'claude', text, title: e.title })
     const count = pin.items ? pin.items.length + ' checklist items' : 'a note'
-    return { result: 'Pinned "' + pin.title + '" (' + count + ") to the user's sticky sidebar." }
+    const verb = replaced ? 'Updated' : 'Pinned'
+    return { result: verb + ' "' + pin.title + '" (' + count + ") in the user's sticky sidebar." }
   })
 
   on('ui.close', async ($, e, next) => {
