@@ -1,5 +1,5 @@
 // sticky-notes: a sidebar of pinned messages, checklists and notes, kept per project.
-import { makePin, toggleItem, toggleCollapsed, removePin, progress, hashText, parsePinArgs, parseUnpinArgs, splitBlocks, pinMarkdown, checklistMarkdown, pinCodes, stripInline } from './pins.js'
+import { makePin, toggleItem, toggleCollapsed, toggleHideDone, removePin, pinMeta, hashText, parsePinArgs, parseUnpinArgs, splitBlocks, pinMarkdown, checklistMarkdown, pinCodes, stripInline } from './pins.js'
 
 const PANE = 'sticky'
 
@@ -180,12 +180,26 @@ export function register(on) {
     })
   })
 
-  // The sidebar
+  // A click on a desktop checklist row's hit layer ticks the item
+  on('ui.message', async ($, e, next) => {
+    const m = e.requestId === PANE ? /^hit-([a-z0-9]+)-(\d+)$/.exec(e.element) : null
+    if (!m || !e.data?.press) return next(e)
+    await mutate($, (list) => toggleItem(list, m[1], Number(m[2])))
+    return {}
+  })
+
+  // The sidebar. Same content on both surfaces: the desktop gets Svg
+  // checkboxes, hover washes and hover-revealed buttons; the terminal gets
+  // text rows with ASCII glyphs, since wide glyphs break its alignment.
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e)
     // Pick up pins another session on this project added
     await loadBoard($)
-    const { Box, Text, Button, Input, Markdown, Code } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Button, Input, Markdown, Code } = ui
+    const desk = e.surface === 'desktop' && 'Svg' in ui && 'Client' in ui
+    const { Svg, Client } = ui
+    const now = await $.clock.now()
 
     const header = Input({
       key: 'new-note',
@@ -206,16 +220,23 @@ export function register(on) {
         gap: 1,
         children: [
           header,
-          Text({ dimColor: true, children: ["Nothing pinned yet. Run /pin to pin Claude's last message, or /note <text>."] }),
+          Text({ dimColor: true, wrap: 'wrap', children: ["Nothing pinned yet. Run /pin to pin Claude's last message, or /note <text>."] }),
         ],
       })
     }
 
+    // Small muted text: section heads, meta lines, labels
+    const quiet = (children, props = {}) => Text({ dimColor: true, size: 'footnote', ...props, children })
+
     // Text that wraps inside a flexible cell instead of running off the pane
     const wrapped = (props, children) => Box({ flexGrow: 1, flexShrink: 1, minWidth: 0, children: [Text({ wrap: 'wrap', ...props, children })] })
 
-    const copyButton = (key, text, what, label = '⧉') =>
-      Button({ key, label, plain: true, onPress: (press) => copyText($, press, text, what) })
+    const copyButton = (key, text, what, label = desk ? '⧉' : 'copy') =>
+      Button({ key, label, plain: true, dimColor: true, onPress: (press) => copyText($, press, text, what) })
+
+    // A label on the left, a quiet button on the right
+    const labelRow = (label, button) =>
+      Box({ flexDirection: 'row', columnGap: 1, children: [Box({ flexGrow: 1, flexShrink: 1, minWidth: 0, children: [quiet([label])] }), button] })
 
     // A snippet with its copy button: a command, or a fenced block
     const snippet = (key, source, lang) =>
@@ -223,42 +244,33 @@ export function register(on) {
         key,
         flexDirection: 'column',
         children: [
-          Box({
-            flexDirection: 'row',
-            columnGap: 1,
-            children: [
-              Box({ flexGrow: 1, children: [Text({ dimColor: true, children: [lang || 'code'] })] }),
-              copyButton(key + '-copy', source, lang ? lang + ' snippet' : 'snippet', '⧉ copy'),
-            ],
-          }),
+          labelRow(lang || 'code', copyButton(key + '-copy', source, lang ? lang + ' snippet' : 'snippet', desk ? '⧉ copy' : 'copy')),
           Code({ source, ...(lang ? { language: lang } : {}), wrap: 'wrap' }),
         ],
       })
 
-    // `command` chips: one line each, with a copy button. Past three they
-    // would drown the note, so they fold into one "copy all" button.
-    const chips = (key, codes) => {
-      const oneLiners = codes.filter((c) => !c.includes('\n'))
+    const copyAll = (key, codes) => copyButton(key, codes.join('\n'), codes.length + ' commands', (desk ? '⧉ ' : '') + 'copy all ' + codes.length + ' commands')
+
+    // `command`s: plain monospace with a quiet copy button after, no chip
+    // around them. Past three they would drown the note, so they fold into
+    // one "copy all" button.
+    const commands = (key, codes) => {
       if (codes.length === 0) return []
-      if (codes.length > 3) {
-        return [copyButton(key + '-all', codes.join('\n'), codes.length + ' commands', '⧉ copy all ' + codes.length + ' commands')]
-      }
+      if (codes.length > 3) return [copyAll(key + '-all', codes)]
       return codes.map((code, i) =>
-        oneLiners.includes(code)
-          ? Box({
+        code.includes('\n')
+          ? snippet(key + '-chip-' + i, code)
+          : Box({
               key: key + '-chip-' + i,
               flexDirection: 'row',
               columnGap: 1,
-              children: [copyButton(key + '-chip-copy-' + i, code, 'command'), wrapped({ color: 'cyan' }, [code])],
-            })
-          : snippet(key + '-chip-' + i, code),
+              children: [wrapped({ mono: true }, [code]), copyButton(key + '-chip-copy-' + i, code, 'command')],
+            }),
       )
     }
 
-    const cellText = (cell) => stripInline(cell)
-
-    // A table drawn as a grid: bold header, rule under it, cells that wrap,
-    // and a lone `code` cell is a copy button
+    // A table: quiet label, semibold header, cells that wrap. Spacing, not
+    // rules, sets the header apart; a lone `code` cell is a copy button.
     const table = (key, t) => {
       const cols = Math.max(t.header.length, ...t.rows.map((r) => r.length))
       const width = Math.floor(100 / cols) + '%'
@@ -267,14 +279,14 @@ export function register(on) {
           key: key + '-r' + ri,
           flexDirection: 'row',
           columnGap: 1,
-          ...(head ? { borderStyle: 'single', borderColor: 'gray' } : {}),
+          ...(head ? { marginBottom: desk ? 'xs' : 0 } : {}),
           children: Array.from({ length: cols }, (_, ci) => {
             const cell = cells[ci] ?? ''
             const lone = /^`([^`]+)`$/.exec(cell.trim())
             const align = t.aligns[ci] === 'right' ? 'flex-end' : t.aligns[ci] === 'center' ? 'center' : 'flex-start'
             const inner = lone
               ? Button({ key: key + '-c' + ri + '-' + ci, label: lone[1], plain: true, onPress: (press) => copyText($, press, lone[1], 'cell') })
-              : Text({ bold: head, wrap: 'wrap', children: [cellText(cell)] })
+              : Text({ ...(head ? { weight: 'semibold', bold: !desk } : {}), tabular: true, wrap: 'wrap', children: [stripInline(cell)] })
             return Box({ key: key + '-b' + ri + '-' + ci, width, minWidth: 0, flexShrink: 1, justifyContent: align, children: [inner] })
           }),
         })
@@ -282,13 +294,7 @@ export function register(on) {
         key,
         flexDirection: 'column',
         children: [
-          Box({
-            flexDirection: 'row',
-            children: [
-              Box({ flexGrow: 1, children: [Text({ dimColor: true, children: ['table · ' + t.rows.length + ' rows'] })] }),
-              copyButton(key + '-copy', t.source, 'table', '⧉ copy table'),
-            ],
-          }),
+          labelRow('table · ' + t.rows.length + ' rows', copyButton(key + '-copy', t.source, 'table', desk ? '⧉ copy table' : 'copy table')),
           row(t.header, 0, true),
           ...t.rows.map((r, ri) => row(r, ri + 1, false)),
         ],
@@ -296,97 +302,155 @@ export function register(on) {
     }
 
     // A pinned message that isn't a checklist: prose, code and tables each in their own way
-    const bodyBlocks = (pin) => {
-      const segments = splitBlocks(pin.body)
-      return segments.flatMap((seg, si) => {
+    const bodyBlocks = (pin) =>
+      splitBlocks(pin.body).flatMap((seg, si) => {
         const key = 'seg-' + pin.id + '-' + si
         if (seg.kind === 'code') return [snippet(key, seg.source, seg.lang)]
         if (seg.kind === 'table') return [table(key, seg)]
-        return [Markdown({ key, text: seg.text }), ...chips(key, [...new Set(seg.text.match(/(?<!`)`[^`\n]+`(?!`)/g)?.map((c) => c.slice(1, -1).trim()) ?? [])])]
+        return [Markdown({ key, text: seg.text }), ...commands(key, [...new Set(seg.text.match(/(?<!`)`[^`\n]+`(?!`)/g)?.map((c) => c.slice(1, -1).trim()) ?? [])])]
       })
+
+    // A checkbox that reads in light and dark: an outline, or a filled box with a tick
+    const box = (done) =>
+      Svg({
+        source:
+          '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="20" viewBox="0 0 16 20"><style>' +
+          '.o{fill:none;stroke:#7a7a7a}.f{fill:#2f7d4f}.t{fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}' +
+          '@media (prefers-color-scheme: dark){.o{stroke:#9a9a9a}.f{fill:#4cae75}.t{stroke:#10291b}}</style>' +
+          (done
+            ? '<rect class="f" x="1.5" y="3.5" width="13" height="13" rx="3"/><path class="t" d="M4.6 10.2l2.4 2.4 4.4-4.8"/>'
+            : '<rect class="o" x="1.5" y="3.5" width="13" height="13" rx="3"/>') +
+          '</svg>',
+        alt: done ? 'done' : 'not done',
+        width: 16,
+        height: 20,
+      })
+
+    const itemRow = (pin, item, i) => {
+      const rowKey = pin.id + '-' + i
+      const label = Text({ wrap: 'wrap', dimColor: item.done, strikethrough: item.done, children: [item.text] })
+      const toggle = () => mutate($, (list) => toggleItem(list, pin.id, i))
+      const row = desk
+        ? Box({
+            key: 'row-' + rowKey,
+            position: 'relative',
+            flexDirection: 'row',
+            alignItems: 'flex-start',
+            columnGap: 'xs',
+            paddingLeft: item.depth * 2,
+            hover: { backgroundColor: '#8080801f' },
+            children: [
+              box(item.done),
+              Box({ flexGrow: 1, flexShrink: 1, minWidth: 0, children: [label] }),
+              Box({
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                children: [Client({ key: 'hit-' + rowKey, module: './hit.js', props: {}, width: '100%', height: '100%' })],
+              }),
+            ],
+          })
+        : Box({
+            key: 'row-' + rowKey,
+            paddingLeft: item.depth * 2,
+            flexDirection: 'row',
+            children: [
+              Box({
+                flexGrow: 1,
+                flexShrink: 1,
+                minWidth: 0,
+                children: [Button({ key: 'item-' + rowKey, plain: true, children: [Text({ wrap: 'wrap', dimColor: item.done, strikethrough: item.done, children: [(item.done ? '[x] ' : '[ ] ') + item.text] })], onPress: toggle })],
+              }),
+            ],
+          })
+      if (item.done || !(item.detail || item.codes)) return [row]
+      return [
+        row,
+        Box({
+          key: 'detail-' + rowKey,
+          paddingLeft: item.depth * 2 + (desk ? 3 : 4),
+          flexDirection: 'column',
+          children: [
+            // A detail made only of code is shown by the commands below, not twice
+            ...(item.detail && !item.codes ? [Text({ dimColor: true, wrap: 'wrap', children: [item.detail] })] : []),
+            ...commands('chip-' + rowKey, item.codes || []),
+          ],
+        }),
+      ]
     }
 
+    // Ticked items fold behind a "N done" toggle
+    const checklist = (pin) => {
+      const doneCount = pin.items.filter((it) => it.done).length
+      const rows = pin.items.flatMap((item, i) => (pin.hideDone && item.done ? [] : itemRow(pin, item, i)))
+      if (!doneCount) return rows
+      const glyph = desk ? (pin.hideDone ? '▸' : '▾') : pin.hideDone ? '+' : '-'
+      return [
+        ...rows,
+        Button({
+          key: 'done-' + pin.id,
+          label: glyph + ' ' + doneCount + ' done',
+          plain: true,
+          dimColor: true,
+          onPress: () => mutate($, (list) => toggleHideDone(list, pin.id)),
+        }),
+      ]
+    }
+
+    const KIND_COLOR = { claude: 'claude', pinned: 'suggestion', note: 'warning' }
+
+    // Two lines: "1. Title" strong, then a quiet meta line led by the kind word in its color
     const card = (pin, n) => {
-      const done = progress(pin)
-      const mark = pin.source === 'note' ? '✎' : pin.source === 'claude' ? '✦' : '📌'
-      const top = Box({
+      const meta = pinMeta(pin, now)
+      const actions = [
+        copyButton('copy-' + pin.id, pin.items ? checklistMarkdown(pin) : pinMarkdown(pin), 'note'),
+        Button({ key: 'unpin-' + pin.id, label: desk ? '✕' : 'x', plain: true, dimColor: true, onPress: () => mutate($, (list) => removePin(list, pin.id)) }),
+      ]
+      const fold = Button({
+        key: 'fold-' + pin.id,
+        label: desk ? (pin.collapsed ? '▸' : '▾') : pin.collapsed ? '+' : '-',
+        plain: true,
+        dimColor: true,
+        onPress: () => mutate($, (list) => toggleCollapsed(list, pin.id)),
+      })
+      const title = Box({
         flexDirection: 'row',
         columnGap: 1,
+        alignItems: 'flex-start',
         children: [
-          wrapped({ bold: true }, [n + ' ' + mark + ' ' + pin.title]),
-          ...(done ? [Text({ ...(done.done === done.total ? { color: 'green' } : { dimColor: true }), children: [done.done + '/' + done.total] })] : []),
-          copyButton('copy-' + pin.id, pin.items ? checklistMarkdown(pin) : pinMarkdown(pin), 'note'),
-          Button({
-            key: 'fold-' + pin.id,
-            label: pin.collapsed ? '▸' : '▾',
-            plain: true,
-            onPress: () => mutate($, (list) => toggleCollapsed(list, pin.id)),
-          }),
-          Button({
-            key: 'unpin-' + pin.id,
-            label: '✕',
-            plain: true,
-            onPress: () => mutate($, (list) => removePin(list, pin.id)),
-          }),
+          wrapped({ weight: 'semibold', bold: !desk }, [n + '. ' + pin.title]),
+          // Always drawn, dim, so Tab reaches them; a hover-only Box can't take the focus
+          Box({ flexDirection: 'row', columnGap: 1, children: actions }),
+          fold,
         ],
       })
-      if (pin.collapsed) return Box({ key: 'pin-' + pin.id, borderStyle: 'round', paddingX: 1, children: [top] })
+      const metaLine = Text({
+        size: 'footnote',
+        wrap: 'wrap',
+        children: [
+          Text({ color: KIND_COLOR[meta.kind], children: [meta.kind] }),
+          ...meta.facts.map((fact, i) =>
+            Text({
+              key: 'fact-' + i,
+              tabular: true,
+              ...(i === 0 && meta.isComplete ? { color: 'success' } : { dimColor: true }),
+              children: [(i === 0 ? ' · ' : '') + fact + (i < meta.facts.length - 1 ? ' · ' : '')],
+            }),
+          ),
+        ],
+      })
+      const head = [title, desk ? metaLine : Box({ paddingLeft: String(n).length + 2, children: [metaLine] })]
+      if (pin.collapsed) return Box({ key: 'pin-' + pin.id, flexDirection: 'column', children: head })
 
-      const body = pin.items
-        ? pin.items.flatMap((item, i) => {
-            const rowKey = pin.id + '-' + i
-            return [
-              Box({
-                key: 'row-' + rowKey,
-                paddingLeft: item.depth * 2,
-                flexDirection: 'row',
-                columnGap: 1,
-                children: [
-                  Box({
-                    flexGrow: 1,
-                    flexShrink: 1,
-                    minWidth: 0,
-                    children: [
-                      Button({
-                        key: 'item-' + rowKey,
-                        plain: true,
-                        children: [Text({ wrap: 'wrap', dimColor: item.done, strikethrough: item.done, children: [(item.done ? '☑ ' : '☐ ') + item.text] })],
-                        onPress: () => mutate($, (list) => toggleItem(list, pin.id, i)),
-                      }),
-                    ],
-                  }),
-                ],
-              }),
-              ...(!item.done && (item.detail || item.codes)
-                ? [
-                    Box({
-                      key: 'detail-' + rowKey,
-                      paddingLeft: item.depth * 2 + 2,
-                      flexDirection: 'column',
-                      children: [
-                        // A detail made only of code is shown by the snippets below, not twice
-                        ...(item.detail && !item.codes ? [Text({ dimColor: true, wrap: 'wrap', children: [item.detail] })] : []),
-                        ...chips('chip-' + rowKey, item.codes || []),
-                      ],
-                    }),
-                  ]
-                : []),
-            ]
-          })
-        : pin.body
-          ? bodyBlocks(pin)
-          : []
-
+      const body = pin.items ? checklist(pin) : pin.body ? bodyBlocks(pin) : []
       const codes = pinCodes(pin)
-      const footer = pin.items && codes.length > 3 ? [copyButton('copyall-' + pin.id, codes.join('\n'), codes.length + ' commands', '⧉ copy all ' + codes.length + ' commands')] : []
-
+      const footer = pin.items && codes.length > 3 ? [copyAll('copyall-' + pin.id, codes)] : []
       return Box({
         key: 'pin-' + pin.id,
         flexDirection: 'column',
-        borderStyle: 'round',
-        ...(pin.source === 'note' ? { borderColor: 'yellow' } : {}),
-        paddingX: 1,
-        children: [top, ...body, ...footer],
+        children: [...head, ...(body.length || footer.length ? [Box({ flexDirection: 'column', marginTop: desk ? 'xs' : 0, children: [...body, ...footer] })] : [])],
       })
     }
 
@@ -394,7 +458,8 @@ export function register(on) {
       flexDirection: 'column',
       width: '100%',
       minWidth: 0,
-      children: [header, ...pins.map((pin, i) => card(pin, i + 1))],
+      gap: 1,
+      children: [header, quiet(['Pinned · ' + pins.length], { tabular: true }), ...pins.map((pin, i) => card(pin, i + 1))],
     })
   })
 }

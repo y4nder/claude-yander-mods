@@ -115,14 +115,51 @@ export function makePin({ id, source, text, title, createdAt = 0 }) {
 
 export function toggleItem(pins, pinId, index) {
   return pins.map((p) =>
-    p.id !== pinId || !p.items
-      ? p
-      : { ...p, items: p.items.map((it, i) => (i === index ? { ...it, done: !it.done } : it)) },
+    p.id !== pinId || !p.items ? p : withItems(p, p.items.map((it, i) => (i === index ? { ...it, done: !it.done } : it))),
   )
+}
+
+// With nothing ticked there is no "N done" toggle, so the fold resets: a
+// later tick would otherwise vanish with no toggle to explain it
+function withItems(pin, items) {
+  const next = { ...pin, items }
+  if (next.hideDone && !items.some((it) => it.done)) next.hideDone = false
+  return next
 }
 
 export function toggleCollapsed(pins, pinId) {
   return pins.map((p) => (p.id === pinId ? { ...p, collapsed: !p.collapsed } : p))
+}
+
+// Folds a checklist's ticked items behind a "N done" toggle, or shows them again
+export function toggleHideDone(pins, pinId) {
+  return pins.map((p) => (p.id === pinId ? { ...p, hideDone: !p.hideDone } : p))
+}
+
+// "just now", "5m ago", "3h ago", "2d ago"; '' when the pin has no time
+export function ago(createdAt, now) {
+  if (!createdAt) return ''
+  const mins = Math.floor(Math.max(0, now - createdAt) / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return mins + 'm ago'
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return hours + 'h ago'
+  return Math.floor(hours / 24) + 'd ago'
+}
+
+const KIND = { claude: 'claude', message: 'pinned', note: 'note' }
+
+// A card's meta line: the kind word first (drawn in its color), then the facts
+// joined by " · "
+export function pinMeta(pin, now) {
+  const done = progress(pin)
+  const codes = pinCodes(pin).length
+  const facts = []
+  if (done) facts.push(done.done + '/' + done.total + ' done')
+  if (codes) facts.push(codes + (codes === 1 ? ' command' : ' commands'))
+  const age = ago(pin.createdAt, now)
+  if (age) facts.push(age)
+  return { kind: KIND[pin.source] || 'pinned', isComplete: Boolean(done && done.done === done.total), facts }
 }
 
 export function removePin(pins, pinId) {

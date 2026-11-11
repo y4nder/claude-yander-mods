@@ -2,7 +2,7 @@
 // Run with: node --test sticky-notes/tests/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { makePin, toggleItem, progress, hashText, stripInline, parsePinArgs, parseUnpinArgs, inlineCodes, splitBlocks, pinCodes, pinMarkdown } from '../hooks/pins.js'
+import { makePin, toggleItem, toggleHideDone, progress, hashText, stripInline, parsePinArgs, parseUnpinArgs, inlineCodes, splitBlocks, pinCodes, pinMarkdown, ago, pinMeta } from '../hooks/pins.js'
 
 test('a numbered list becomes a checklist titled by its heading', () => {
   const pin = makePin({
@@ -143,4 +143,40 @@ test('splitBlocks separates prose, code and tables', () => {
   assert.deepEqual(blocks[1].rows, [['a | b', '2']])
   assert.equal(blocks[2].source, 'ls -la')
   assert.equal(blocks[2].lang, 'sh')
+})
+
+test('ago reads as a short relative age', () => {
+  const min = 60_000
+  assert.equal(ago(0, 10 * min), '')
+  assert.equal(ago(10 * min, 10 * min + 20_000), 'just now')
+  assert.equal(ago(1, 1 + 5 * min), '5m ago')
+  assert.equal(ago(1, 1 + 3 * 60 * min), '3h ago')
+  assert.equal(ago(1, 1 + 2 * 24 * 60 * min), '2d ago')
+})
+
+test('the meta line leads with the kind word, then progress, commands and age', () => {
+  const list = makePin({ id: 'a', source: 'claude', createdAt: 1, text: '- run `ls`\n- [x] run `pwd`' })
+  assert.deepEqual(pinMeta(list, 1 + 5 * 60_000), { kind: 'claude', isComplete: false, facts: ['1/2 done', '2 commands', '5m ago'] })
+  const note = makePin({ id: 'b', source: 'note', text: 'buy milk' })
+  assert.deepEqual(pinMeta(note, 99), { kind: 'note', isComplete: false, facts: [] })
+  const msg = makePin({ id: 'c', source: 'message', createdAt: 5, text: 'Build\n\nUse `make`' })
+  assert.deepEqual(pinMeta(msg, 5), { kind: 'pinned', isComplete: false, facts: ['1 command', 'just now'] })
+  const done = toggleItem([list], 'a', 0)[0]
+  assert.equal(pinMeta(done, 1).isComplete, true)
+})
+
+test('toggleHideDone flips only the named pin', () => {
+  const a = makePin({ id: 'a', source: 'note', text: 'x' })
+  const b = makePin({ id: 'b', source: 'note', text: 'y' })
+  const out = toggleHideDone([a, b], 'a')
+  assert.equal(out[0].hideDone, true)
+  assert.equal(out[1].hideDone, undefined)
+  assert.equal(toggleHideDone(out, 'a')[0].hideDone, false)
+})
+
+test('unticking the last done item resets the fold, so a later tick stays visible', () => {
+  const pin = { ...makePin({ id: 'a', source: 'note', text: '- [x] one\n- two' }), hideDone: true }
+  const out = toggleItem([pin], 'a', 0)[0]
+  assert.equal(out.hideDone, false)
+  assert.equal(toggleItem([{ ...pin }], 'a', 1)[0].hideDone, true)
 })
